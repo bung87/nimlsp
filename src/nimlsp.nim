@@ -9,7 +9,8 @@ import uri
 import algorithm
 import strscans
 import sets
-
+when defined(nimpretty):
+  import nimlsppkg / prettylib
 const
   version = block:
     var version = "0.0.0"
@@ -438,6 +439,27 @@ while true:
                   none(string)
                 ).JsonNode
               message.respond response
+        of "textDocument/formatting":
+          message.textDocumentRequest(DocumentFormattingParams, documentFormattingRequest):
+            let infile = documentFormattingRequest.docPath
+            let outfile = storage / hash(documentFormattingRequest.docUri).toHex
+            let params = message["params"].unsafeGet
+            let tabSize = params["tabSize"].getInt
+            var response = newJarray()
+            when defined(nimpretty):
+              var opt = PrettyOptions(indWidth: tabSize, maxLineLen: 80)
+              debugEcho "Formatting infile: ", infile, " outfile: ", outfile
+              prettyPrint(infile, outfile, opt)
+              let newText = readFile(outfile)
+              let lines = countLines(newText)
+              response.add create(TextEdit,
+              create(Range,
+                  create(Position, 0, 0),
+                  create(Position, lines, 999)
+                ),
+                newText
+              ).JsonNode
+            message.respond response
         #of "textDocument/signatureHelp":
         #  if message["params"].isSome:
         #    let signRequest = message["params"].unsafeGet

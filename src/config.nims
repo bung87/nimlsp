@@ -9,6 +9,7 @@ switch "hint","XDeclaredButNotUsed:off"
 
 --define:useStdoutAsStdmsg
 --define:nimsuggest
+--define:nimpretty
 --define:nimcore
 
 # die when nimsuggest uses more than 4GB:

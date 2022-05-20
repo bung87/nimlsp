@@ -1,3 +1,6 @@
+when not(compileOption("threads")):
+  {.fatal: "Please, compile this program with the --threads:on option!".}
+
 import nimlsppkg / [baseprotocol, utfmapping, suggestlib, logger]
 include nimlsppkg / messages
 import algorithm
@@ -9,7 +12,7 @@ import hashes
 import sets
 import uri
 import osproc
-import asyncfile, asyncdispatch
+import chronos
 
 const
   version = block:
@@ -36,13 +39,14 @@ infoLog("explicitSourcePath: ", explicitSourcePath)
 for i in 1..paramCount():
   infoLog("Argument " & $i & ": " & paramStr(i))
 
-var
-  ins = newAsyncFile(stdin.getOsFileHandle().AsyncFD)
-  outs = newAsyncFile(stdout.getOsFileHandle().AsyncFD)
-  gotShutdown = false
-  initialized = false
-  projectFiles = initTable[string, tuple[nimsuggest: NimSuggest, openFiles: OrderedSet[string]]]()
-  openFiles = initTable[string, tuple[projectFile: string, fingerTable: seq[seq[tuple[u16pos, offset: int]]]]]()
+proc readInput(wfd: AsyncFD) {.thread.} =
+  ## This procedure performs reading from `stdin` and sends data over
+  ## pipe to main thread.
+  let transp = fromPipe(wfd)
+
+  while true:
+    let line = stdin.readLine()
+    discard waitFor transp.write(line & "\r\n")
 
 template whenValid(data, kind, body) =
   if data.isValid(kind, allowExtra = true):
@@ -134,13 +138,13 @@ proc parseId(node: JsonNode): int =
     raise newException(MalformedFrame, "Invalid id node: " & repr(node))
 
 proc respond(request: RequestMessage, data: JsonNode) {.async.} =
-  await outs.sendJson create(ResponseMessage, "2.0", parseId(request["id"]), some(data), none(ResponseError)).JsonNode
+  sendJson create(ResponseMessage, "2.0", parseId(request["id"]), some(data), none(ResponseError)).JsonNode
 
 proc error(request: RequestMessage, errorCode: int, message: string, data: JsonNode) {.async.} =
-  await outs.sendJson create(ResponseMessage, "2.0", parseId(request["id"]), none(JsonNode), some(create(ResponseError, errorCode, message, data))).JsonNode
+  sendJson create(ResponseMessage, "2.0", parseId(request["id"]), none(JsonNode), some(create(ResponseError, errorCode, message, data))).JsonNode
 
 proc notify(notification: string, data: JsonNode) {.async.} =
-  await outs.sendJson create(NotificationMessage, "2.0", notification, some(data)).JsonNode
+  sendJson create(NotificationMessage, "2.0", notification, some(data)).JsonNode
 
 type Certainty = enum
   None,
@@ -183,8 +187,7 @@ proc getProjectFile(fileUri: string): string =
           certainty = Nimble
     path = dir
 
-template getNimsuggest(fileuri: string): Nimsuggest =
-  projectFiles[openFiles[fileuri].projectFile].nimsuggest
+
 
 if paramCount() == 1:
   case paramStr(1):
@@ -203,11 +206,21 @@ if not fileExists(nimpath / "config/nim.cfg"):
     "Supply the Nim project folder by adding it as an argument.\n"
   quit 1
 
-proc main(){.async.} =
+proc processInput(rfd: AsyncFD) {.async,gcsafe.} =
+  var
+    gotShutdown = false
+    initialized = false
+    projectFiles = initTable[string, tuple[nimsuggest: NimSuggest, openFiles: OrderedSet[string]]]()
+    openFiles = initTable[string, tuple[projectFile: string, fingerTable: seq[seq[tuple[u16pos, offset: int]]]]]()
+
+  template getNimsuggest(fileuri: string): Nimsuggest =
+    projectFiles[openFiles[fileuri].projectFile].nimsuggest
+
+  let transp = fromPipe(rfd)
   while true:
     try:
       debugLog "Trying to read frame"
-      let frame = await ins.readFrame
+      let frame = await transp.readFrame
       debugLog "Got frame:" 
       infoLog frame
       let message = frame.parseJson
@@ -634,5 +647,15 @@ proc main(){.async.} =
     except CatchableError as e:
       warnLog "Got exception: ", e.msg
       continue
+
+proc main() {.async.} =
+  let (rfd, wfd) = createAsyncPipe()
+  if rfd == asyncInvalidPipe or wfd == asyncInvalidPipe:
+    raise newException(ValueError, "Could not initialize pipe!")
+  
+  var thread: Thread[AsyncFD]
+  thread.createThread(readInput, wfd)
+  
+  await processInput(rfd)
 
 waitFor main()

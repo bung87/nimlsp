@@ -1,5 +1,5 @@
 import strutils, parseutils, json
-import asyncfile, asyncdispatch
+import chronos
 import logger
 type
   BaseProtocolError* = object of Defect
@@ -12,17 +12,17 @@ proc skipWhitespace(x: string, pos: int): int =
   while result < x.len and x[result] in Whitespace:
     inc result
 
-proc sendFrame*(s: AsyncFile, frame: string) {.async} =
+proc sendFrame*(frame: string) =
   when defined(debugCommunication):
     infoLog(frame)
-  await s.write "Content-Length: " & $frame.len & "\r\n\r\n" & frame
+  stdout.write "Content-Length: " & $frame.len & "\r\n\r\n" & frame
 
-proc sendJson*(s: AsyncFile, data: JsonNode) {.async.} =
+proc sendJson*(data: JsonNode) =
   var frame = newStringOfCap(1024)
   toUgly(frame, data)
-  await s.sendFrame(frame)
+  sendFrame(frame)
 
-proc readFrame*(s: AsyncFile): Future[string] {.async.} =
+proc readFrame*(s: StreamTransport): Future[string] {.async.} =
   var contentLen = -1
   var headerStarted = false
 
@@ -52,14 +52,10 @@ proc readFrame*(s: AsyncFile): Future[string] {.async.} =
       continue
     else:
       if contentLen != -1:
-        var buf = newString(contentLen)
-        var i = 0
-        while i < contentLen:
-          let r = await s.readBuffer(buf[i].addr, contentLen - i)
-          i += r
+        let buf = await s.read(contentLen)
         when defined(debugCommunication):
           infoLog(buf)
-        return buf
+        return cast[string](buf)
       else:
         raise newException(MalformedFrame, "missing Content-Length header")
 

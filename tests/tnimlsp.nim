@@ -2,6 +2,7 @@ import unittest
 import std/[asyncdispatch, asyncfile, os, osproc, options, json]
 import .. / src / nimlsppkg / baseprotocol
 include .. / src / nimlsppkg / messages
+import tempfile
 
 let
   nimlsp = parentDir(parentDir(currentSourcePath())) / "nimlsp"
@@ -11,11 +12,12 @@ let
 
 suite "Nim LSP basic operation":
   test "Nim LSP can be initialised":
+    let dir = mkdtemp()
     var ir = create(RequestMessage, "2.0", 0, "initialize", some(
       create(InitializeParams,
         processId = getCurrentProcessId(),
         rootPath = none(string),
-        rootUri = "file:///tmp/",
+        rootUri = "file://" & dir,
         initializationOptions = none(JsonNode),
         capabilities = create(ClientCapabilities,
           workspace = none(WorkspaceClientCapabilities),

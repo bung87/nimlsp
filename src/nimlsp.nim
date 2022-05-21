@@ -663,11 +663,11 @@ proc main(ins: Stream | AsyncFile, outs: Stream | AsyncFile) {.multisync.} =
 
 when defined(windows):
   var
-    ins = newFileStream(stdin)
-    outs = newFileStream(stdout)
-  main(ins, outs)
+    ins = openAsync("CONIN$", fmRead)
+    outs = openAsync("CONOUT$", fmWrite)
+
 else:
   var
     ins = newAsyncFile(stdin.getOsFileHandle().AsyncFD)
     outs = newAsyncFile(stdout.getOsFileHandle().AsyncFD)
-  waitFor main(ins, outs)
+waitFor main(ins, outs)

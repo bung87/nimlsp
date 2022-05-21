@@ -1,6 +1,8 @@
 import strutils, parseutils, json
 import asyncfile, asyncdispatch
 import logger
+import streams
+
 type
   BaseProtocolError* = object of Defect
 
@@ -12,23 +14,22 @@ proc skipWhitespace(x: string, pos: int): int =
   while result < x.len and x[result] in Whitespace:
     inc result
 
-proc sendFrame*(s: AsyncFile, frame: string) {.async} =
+proc sendFrame*(f: Stream,frame: string) =
   when defined(debugCommunication):
     infoLog(frame)
-  await s.write "Content-Length: " & $frame.len & "\r\n\r\n" & frame
+  f.write "Content-Length: " & $frame.len & "\r\n\r\n" & frame
+  f.flush()
 
-proc sendJson*(s: AsyncFile, data: JsonNode) {.async.} =
+proc sendJson*(f: Stream, data: JsonNode) =
   var frame = newStringOfCap(1024)
   toUgly(frame, data)
-  await s.sendFrame(frame)
+  f.sendFrame(frame)
 
-proc readFrame*(s: AsyncFile): Future[string] {.async.} =
+proc readFrame*(f: Stream): string =
   var contentLen = -1
   var headerStarted = false
-
   while true:
-    var ln = await s.readLine()
-
+    var ln =  f.readline()
     if ln.len != 0:
       headerStarted = true
       let sep = ln.find(':')
@@ -53,10 +54,7 @@ proc readFrame*(s: AsyncFile): Future[string] {.async.} =
     else:
       if contentLen != -1:
         var buf = newString(contentLen)
-        var i = 0
-        while i < contentLen:
-          let r = await s.readBuffer(buf[i].addr, contentLen - i)
-          i += r
+        discard f.readData(buf[0].addr, contentLen)
         when defined(debugCommunication):
           infoLog(buf)
         return buf

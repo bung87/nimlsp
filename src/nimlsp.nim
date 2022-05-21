@@ -9,7 +9,6 @@ import hashes
 import sets
 import uri
 import osproc
-import asyncfile, asyncdispatch
 
 const
   version = block:
@@ -37,8 +36,6 @@ for i in 1..paramCount():
   infoLog("Argument " & $i & ": " & paramStr(i))
 
 var
-  ins = newAsyncFile(stdin.getOsFileHandle().AsyncFD)
-  outs = newAsyncFile(stdout.getOsFileHandle().AsyncFD)
   gotShutdown = false
   initialized = false
   projectFiles = initTable[string, tuple[nimsuggest: NimSuggest, openFiles: OrderedSet[string]]]()
@@ -133,14 +130,14 @@ proc parseId(node: JsonNode): int =
   else:
     raise newException(MalformedFrame, "Invalid id node: " & repr(node))
 
-proc respond(request: RequestMessage, data: JsonNode) {.async.} =
-  await outs.sendJson create(ResponseMessage, "2.0", parseId(request["id"]), some(data), none(ResponseError)).JsonNode
+proc respond(outs: Stream, request: RequestMessage, data: JsonNode) =
+  outs.sendJson create(ResponseMessage, "2.0", parseId(request["id"]), some(data), none(ResponseError)).JsonNode
 
-proc error(request: RequestMessage, errorCode: int, message: string, data: JsonNode) {.async.} =
-  await outs.sendJson create(ResponseMessage, "2.0", parseId(request["id"]), none(JsonNode), some(create(ResponseError, errorCode, message, data))).JsonNode
+proc error(outs: Stream,request: RequestMessage, errorCode: int, message: string, data: JsonNode) =
+  outs.sendJson create(ResponseMessage, "2.0", parseId(request["id"]), none(JsonNode), some(create(ResponseError, errorCode, message, data))).JsonNode
 
-proc notify(notification: string, data: JsonNode) {.async.} =
-  await outs.sendJson create(NotificationMessage, "2.0", notification, some(data)).JsonNode
+proc notify(outs: Stream,notification: string, data: JsonNode) =
+  outs.sendJson create(NotificationMessage, "2.0", notification, some(data)).JsonNode
 
 type Certainty = enum
   None,
@@ -203,28 +200,31 @@ if not fileExists(nimpath / "config/nim.cfg"):
     "Supply the Nim project folder by adding it as an argument.\n"
   quit 1
 
-proc main(){.async.} =
+proc main() =
+  var
+    ins = newFileStream(stdin)
+    outs = newFileStream(stdout)
   while true:
     try:
       debugLog "Trying to read frame"
-      let frame = await ins.readFrame
+      let frame = ins.readFrame
       debugLog "Got frame:" 
       infoLog frame
       let message = frame.parseJson
       whenValidStrict(message, RequestMessage):
         debugLog "Got valid Request message of type " & message["method"].getStr
         if not initialized and message["method"].getStr != "initialize":
-          await message.error(-32002, "Unable to accept requests before being initialized", newJNull())
+          outs.error(message, -32002, "Unable to accept requests before being initialized", newJNull())
           continue
         case message["method"].getStr:
           of "shutdown":
             debugLog "Got shutdown request, answering"
-            await message.respond(newJNull())
+            outs.respond(message, newJNull())
             gotShutdown = true
           of "initialize":
             debugLog "Got initialize request, answering"
             initialized = true
-            await message.respond(create(InitializeResult, create(ServerCapabilities,
+            outs.respond(message, create(InitializeResult, create(ServerCapabilities,
               textDocumentSync = some(create(TextDocumentSyncOptions,
                 openClose = some(true),
                 change = some(TextDocumentSyncKind.Full.int),
@@ -306,7 +306,7 @@ proc main(){.async.} =
                     command = none(Command),
                     data = none(JsonNode)
                   ).JsonNode
-              await message.respond completionItems
+              outs.respond message, completionItems
           of "textDocument/hover":
             message.textDocumentRequest(TextDocumentPositionParams, hoverRequest):
               debugLog "Running equivalent of: def ", uriToPath(fileuri), ";", filestash, ":",
@@ -320,7 +320,7 @@ proc main(){.async.} =
                 suggestions[0..(if suggestions.len > 10: 10 else: suggestions.high)],
                 (if suggestions.len > 10: " and " & $(suggestions.len-10) & " more" else: "")
               if suggestions.len == 0:
-                await message.respond newJNull()
+                outs.respond message, newJNull()
               else:
                 var label = suggestions[0].qualifiedPath.join(".")
                 if suggestions[0].forth != "":
@@ -333,7 +333,7 @@ proc main(){.async.} =
                     ))
                   markedString = create(MarkedStringOption, "nim", label)
                 if suggestions[0].doc != "":
-                  await message.respond create(Hover,
+                  outs.respond message, create(Hover,
                     @[
                       markedString,
                       create(MarkedStringOption, "", suggestions[0].nimDocstring),
@@ -341,7 +341,7 @@ proc main(){.async.} =
                     rangeopt
                   ).JsonNode
                 else:
-                  await message.respond create(Hover, markedString, rangeopt).JsonNode
+                  outs.respond message, create(Hover, markedString, rangeopt).JsonNode
           of "textDocument/references":
             message.textDocumentRequest(ReferenceParams, referenceRequest):
               debugLog "Running equivalent of: use ", uriToPath(fileuri), ";", filestash, ":",
@@ -365,9 +365,9 @@ proc main(){.async.} =
                     )
                   ).JsonNode
               if response.len == 0:
-                await message.respond newJNull()
+                outs.respond message, newJNull()
               else:
-                await message.respond response
+                outs.respond message, response
           of "textDocument/rename":
             message.textDocumentRequest(RenameParams, renameRequest):
               debugLog "Running equivalent of: use ", uriToPath(fileuri), ";", filestash, ":",
@@ -381,7 +381,7 @@ proc main(){.async.} =
                 suggestions[0..(if suggestions.len > 10: 10 else: suggestions.high)],
                 (if suggestions.len > 10: " and " & $(suggestions.len-10) & " more" else: "")
               if suggestions.len == 0:
-                await message.respond newJNull()
+                outs.respond message, newJNull()
               else:
                 var textEdits = newJObject()
                 for suggestion in suggestions:
@@ -394,7 +394,7 @@ proc main(){.async.} =
                     ),
                     renameRequest["newName"].getStr
                   ).JsonNode
-                await message.respond create(WorkspaceEdit,
+                outs.respond message, create(WorkspaceEdit,
                   some(textEdits),
                   none(seq[TextDocumentEdit])
                 ).JsonNode
@@ -411,7 +411,7 @@ proc main(){.async.} =
                 declarations[0..(if declarations.len > 10: 10 else: declarations.high)],
                 (if declarations.len > 10: " and " & $(declarations.len-10) & " more" else: "")
               if declarations.len == 0:
-                await message.respond newJNull()
+                outs.respond message, newJNull()
               else:
                 var response = newJarray()
                 for declaration in declarations:
@@ -422,7 +422,7 @@ proc main(){.async.} =
                       create(Position, declaration.line-1, declaration.column + declaration.qualifiedPath[^1].len)
                     )
                   ).JsonNode
-                await message.respond response
+                outs.respond message, response
           of "textDocument/documentSymbol":
             message.textDocumentRequest(DocumentSymbolParams, symbolRequest):
               debugLog "Running equivalent of: outline ", uriToPath(fileuri), ";", filestash
@@ -431,7 +431,7 @@ proc main(){.async.} =
                 syms[0..(if syms.len > 10: 10 else: syms.high)],
                 (if syms.len > 10: " and " & $(syms.len-10) & " more" else: "")
               if syms.len == 0:
-                await message.respond newJNull()
+                outs.respond message, newJNull()
               else:
                 var response = newJarray()
                 for sym in syms.sortedByIt((it.line,it.column,it.quality)):
@@ -451,7 +451,7 @@ proc main(){.async.} =
                     ),
                     none(string)
                   ).JsonNode
-                await message.respond response
+                outs.respond message, response
           of "textDocument/signatureHelp":
             message.textDocumentRequest(TextDocumentPositionParams, sigHelpRequest):
               debugLog "Running equivalent of: con ", uriToPath(fileuri), ";", filestash, ":",
@@ -469,14 +469,14 @@ proc main(){.async.} =
                   parameters = none(seq[ParameterInformation])
                 )
 
-              await message.respond create(SignatureHelp,
+              outs.respond message, create(SignatureHelp,
                 signatures = signatures,
                 activeSignature = some(0),
                 activeParameter = some(0)
               ).JsonNode
           else:
             debugLog "Unknown request"
-            await message.error(errorCode = -32600, message = "Unknown request: " & frame, data = newJObject())
+            outs.error(message, errorCode = -32600, message = "Unknown request: " & frame, data = newJObject())
         continue
       whenValidStrict(message, NotificationMessage):
         debugLog "Got valid Notification message of type " & message["method"].getStr
@@ -614,11 +614,11 @@ proc main(){.async.} =
                     none(seq[DiagnosticRelatedInformation])
                   )
 
-                await notify(
+                outs.notify(
                   "textDocument/publishDiagnostics",
                   create(PublishDiagnosticsParams, f, response).JsonNode
                 )
-              await notify("textDocument/publishDiagnostics", create(PublishDiagnosticsParams,
+              outs.notify("textDocument/publishDiagnostics", create(PublishDiagnosticsParams,
                 fileuri,
                 response).JsonNode
               )
@@ -635,4 +635,4 @@ proc main(){.async.} =
       warnLog "Got exception: ", e.msg
       continue
 
-waitFor main()
+main()

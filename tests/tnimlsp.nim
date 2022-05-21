@@ -6,9 +6,9 @@ import tempfile
 
 let
   nimlsp = parentDir(parentDir(currentSourcePath())) / "nimlsp"
-  p = startProcess(nimlsp, options = {})
-  i = newAsyncFile(p.inputHandle().AsyncFD)
-  o = newAsyncFile(p.outputHandle().AsyncFD)
+  p = startProcess(nimlsp, options = {poDaemon})
+  i = p.inputStream()
+  o = p.outputStream()
 
 suite "Nim LSP basic operation":
   test "Nim LSP can be initialised":
@@ -28,10 +28,9 @@ suite "Nim LSP basic operation":
         workspaceFolders = none(seq[WorkspaceFolder])
       ).JsonNode)
     ).JsonNode
-    waitFor i.sendJson ir
-
-    var frame = o.readFrame
-    var message = parseJson waitFor frame
+    i.sendJson ir
+    var frame = o.readFrame()
+    var message = parseJson frame
     if message.isValid(ResponseMessage):
       var data = ResponseMessage(message)
       check data["id"].getInt == 0
